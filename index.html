@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Urna Eletrônica WebRTC - Votação Online e Presencial</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PeerJS para WebRTC P2P -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- QRCode Generator -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            user-select: none;
+        }
+        .font-lcd {
+            font-family: 'Share Tech Mono', monospace;
+        }
+        /* Estilização especial para a Urna Eletrônica */
+        .urna-bezel {
+            background: linear-gradient(145deg, #d8d8d8, #bfbfbf);
+            box-shadow: 5px 5px 15px #a3a3a3, -5px -5px 15px #ffffff;
+        }
+        .urna-keyboard-bg {
+            background: #1e2022;
+            box-shadow: inset 3px 3px 8px #0d0e0f, inset -3px -3px 8px #2f3235;
+        }
+        .btn-key {
+            background: linear-gradient(145deg, #2a2d31, #1b1c1e);
+            box-shadow: 2px 2px 5px #121314, -1px -1px 3px #373b40;
+            transition: all 0.08s ease;
+        }
+        .btn-key:active {
+            transform: translateY(2px);
+            box-shadow: inset 2px 2px 4px #0a0a0b;
+        }
+        /* Teclas especiais */
+        .btn-branco { background: linear-gradient(145deg, #ffffff, #e2e8f0); color: #000; }
+        .btn-corrige { background: linear-gradient(145deg, #f97316, #ea580c); color: #fff; }
+        .btn-confirma { background: linear-gradient(145deg, #22c55e, #16a34a); color: #fff; }
+
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white; color: black; }
+        }
+        .print-only { display: none; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col">
+
+    <!-- Top Navigation & Host Status Bar -->
+    <header class="no-print bg-slate-800 border-b border-slate-700 px-4 py-3 flex flex-wrap justify-between items-center gap-3">
+        <div class="flex items-center gap-3">
+            <div class="bg-green-600 text-white p-2 rounded-lg font-bold text-lg flex items-center gap-2">
+                <i class="fa-solid fa-check-to-slot"></i>
+                <span>UrnaWeb</span>
+            </div>
+            <div>
+                <h1 id="electionTitleHeader" class="text-sm font-semibold text-slate-200">Eleição Geral</h1>
+                <p id="timeStatus" class="text-xs text-slate-400">Status: <span class="text-green-400 font-bold">Aposta Aberta</span> | Encerra às <span id="endTimeDisplay">18:00</span></p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+            <div id="connectionBadge" class="bg-slate-700 text-slate-300 px-3 py-1.5 rounded-full text-xs font-mono flex items-center gap-2">
+                <span id="connDot" class="w-2.5 h-2.5 rounded-full bg-yellow-500 animate-pulse"></span>
+                <span id="connText">Inicializando WebRTC...</span>
+            </div>
+
+            <!-- Secret Admin Toggle Button -->
+            <button onclick="requestAdminAccess()" title="Acesso Admin (Requer Senha)" class="p-2 text-slate-400 hover:text-yellow-400 hover:bg-slate-700 rounded-lg transition flex items-center gap-1 text-xs">
+                <i class="fa-solid fa-user-shield text-lg"></i>
+                <span class="hidden sm:inline font-semibold">Admin</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- LOADING OVERLAY SCREEN -->
+    <div id="loadingOverlay" class="no-print fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-4 text-center">
+        <div class="relative flex items-center justify-center mb-6">
+            <div class="w-20 h-20 border-4 border-green-500/20 border-t-green-500 rounded-full animate-spin"></div>
+            <i class="fa-solid fa-check-to-slot text-3xl text-green-400 absolute"></i>
+        </div>
+        <h2 id="loadingTitle" class="text-xl font-bold text-slate-100 mb-2">Conectando à Rede WebRTC...</h2>
+        <p id="loadingSubtitle" class="text-sm text-slate-400 max-w-sm">Aguarde um momento enquanto preparamos a Urna Eletrônica e estabelecemos a conexão segura P2P.</p>
+    </div>
+
+    <!-- ADMIN PASSWORD AUTH MODAL -->
+    <div id="adminPassModal" class="no-print fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl p-6 shadow-2xl text-center space-y-4">
+            <div class="w-12 h-12 bg-yellow-500/10 border border-yellow-500/30 rounded-full flex items-center justify-center mx-auto text-yellow-400 text-xl">
+                <i class="fa-solid fa-lock"></i>
+            </div>
+            <div>
+                <h3 class="text-lg font-bold text-slate-100">Acesso Restrito ao Admin</h3>
+                <p class="text-xs text-slate-400 mt-1">Digite a senha para acessar o painel de gerenciamento e apuração da urna.</p>
+            </div>
+            <form onsubmit="handleAdminLogin(event)" class="space-y-3">
+                <input type="password" id="adminPasswordInput" placeholder="Digite a senha..." autocomplete="off" class="w-full bg-slate-800 border border-slate-700 focus:border-yellow-500 text-center text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none tracking-widest font-mono">
+                <p id="passErrorMsg" class="text-xs text-red-400 font-semibold hidden">Senha incorreta! Tente novamente.</p>
+                <div class="flex gap-2">
+                    <button type="button" onclick="closeAdminPassModal()" class="w-1/2 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-lg text-xs font-semibold">Cancelar</button>
+                    <button type="submit" class="w-1/2 bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold py-2 rounded-lg text-xs transition">Entrar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <main class="no-print flex-1 max-w-6xl w-full mx-auto p-4 flex flex-col items-center justify-center">
+        
+        <!-- Connection Banner for Remote Voters -->
+        <div id="roomInfoCard" class="w-full max-w-md bg-slate-800 border border-slate-700 rounded-xl p-4 mb-6 shadow-xl flex items-center justify-between gap-4">
+            <div>
+                <p class="text-xs text-slate-400 font-medium">CÓDIGO DA SALA (WEBRTC):</p>
+                <div class="flex items-center gap-2">
+                    <span id="roomCodeDisplay" class="text-xl font-mono font-bold text-green-400">---</span>
+                    <button onclick="copyRoomLink()" class="text-xs bg-green-600 hover:bg-green-500 text-white font-semibold px-2.5 py-1 rounded shadow flex items-center gap-1.5 transition">
+                        <i class="fa-regular fa-copy"></i> Copiar Link Direto
+                    </button>
+                </div>
+                <p class="text-[11px] text-slate-400 mt-1">Envie o link para amigos votarem remotamente do celular ou PC!</p>
+            </div>
+            <div id="qrcodeSmall" class="bg-white p-1 rounded-lg"></div>
+        </div>
+
+        <!-- URNA ELETRÔNICA MAIN FRAME -->
+        <div class="urna-bezel w-full max-w-4xl rounded-2xl p-4 md:p-8 text-slate-900 shadow-2xl border-4 border-slate-300">
+            <div class="flex flex-col lg:flex-row gap-6">
+                
+                <!-- URNA SCREEN (DISPLAY LCD) -->
+                <div class="flex-1 bg-slate-100 border-4 border-slate-400 rounded-xl p-4 min-h-[380px] flex flex-col justify-between shadow-inner relative overflow-hidden">
+                    
+                    <!-- Voted screen overlay -->
+                    <div id="fimOverlay" class="hidden absolute inset-0 bg-slate-100 z-20 flex flex-col items-center justify-center">
+                        <span class="font-lcd text-7xl font-extrabold text-slate-800 tracking-widest animate-pulse">F I M</span>
+                        <p class="text-slate-600 mt-4 text-sm font-semibold">VOTO REGISTRADO COM SUCESSO!</p>
+                    </div>
+
+                    <!-- Already Voted Warning -->
+                    <div id="alreadyVotedOverlay" class="hidden absolute inset-0 bg-slate-100 z-20 flex flex-col items-center justify-center p-6 text-center">
+                        <i class="fa-solid fa-triangle-exclamation text-amber-500 text-5xl mb-3"></i>
+                        <h2 class="text-xl font-bold text-slate-800">Você já votou!</h2>
+                        <p class="text-slate-600 text-sm mt-2">Este dispositivo já computou um voto nesta eleição. Não é permitido votar novamente.</p>
+                    </div>
+
+                    <!-- Time Expired Warning -->
+                    <div id="expiredOverlay" class="hidden absolute inset-0 bg-slate-100 z-20 flex flex-col items-center justify-center p-6 text-center">
+                        <i class="fa-solid fa-clock text-red-500 text-5xl mb-3"></i>
+                        <h2 class="text-xl font-bold text-slate-800">Votação Encerrada</h2>
+                        <p class="text-slate-600 text-sm mt-2">O horário limite configurado para esta votação já expirou.</p>
+                    </div>
+
+                    <!-- Main Voting Display Content -->
+                    <div id="votingDisplay" class="h-full flex flex-col justify-between">
+                        <div>
+                            <div class="text-xs uppercase font-bold text-slate-500 tracking-wider mb-2">SEU VOTO VAI PARA</div>
+                            <div id="cargoTitle" class="text-xl font-bold text-slate-800 mb-4">PRESIDENTE</div>
+
+                            <!-- Digits input display -->
+                            <div class="flex items-center gap-2 mb-6">
+                                <span class="text-sm font-semibold text-slate-600">Número:</span>
+                                <div id="digitsBox" class="flex gap-2 font-lcd text-3xl font-bold">
+                                    <div class="digit-box w-10 h-12 border-2 border-slate-400 bg-white flex items-center justify-center shadow-inner"></div>
+                                    <div class="digit-box w-10 h-12 border-2 border-slate-400 bg-white flex items-center justify-center shadow-inner"></div>
+                                </div>
+                            </div>
+
+                            <!-- Candidate Details View -->
+                            <div id="candidateDetails" class="hidden flex gap-4 items-start bg-white p-3 rounded-lg border border-slate-300">
+                                <div class="w-24 h-28 bg-slate-200 border border-slate-400 rounded overflow-hidden flex-shrink-0">
+                                    <img id="candPhoto" src="" alt="Candidato" class="w-full h-full object-cover">
+                                </div>
+                                <div class="space-y-1 text-sm text-slate-800">
+                                    <p><strong>Nome:</strong> <span id="candName" class="text-slate-900 font-bold">--</span></p>
+                                    <p><strong>Partido:</strong> <span id="candParty" class="text-slate-700">--</span></p>
+                                </div>
+                            </div>
+
+                            <!-- White vote message -->
+                            <div id="whiteVoteNotice" class="hidden my-4 p-4 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 font-bold text-center text-lg">
+                                VOTO EM BRANCO
+                            </div>
+
+                            <!-- Null vote message -->
+                            <div id="nullVoteNotice" class="hidden my-4 p-4 bg-red-50 border border-red-300 rounded-lg text-red-900 font-bold text-center text-lg">
+                                NÚMERO ERRADO / VOTO NULO
+                            </div>
+                        </div>
+
+                        <!-- Instructions footer on screen -->
+                        <div class="border-t border-slate-300 pt-2 text-[11px] text-slate-600">
+                            <p>Aperte a tecla:</p>
+                            <p class="font-semibold"><strong>VERDE</strong> para CONFIRMAR este voto</p>
+                            <p class="font-semibold"><strong>LARANJA</strong> para REINICIAR este voto</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- URNA KEYPAD -->
+                <div class="w-full lg:w-72 urna-keyboard-bg p-5 rounded-xl flex flex-col justify-between shadow-2xl">
+                    <div class="flex items-center justify-between mb-4 border-b border-slate-700 pb-2">
+                        <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Justiça Eleitoral</span>
+                        <div class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></div>
+                    </div>
+
+                    <!-- Numbers Grid -->
+                    <div class="grid grid-cols-3 gap-3 mb-6">
+                        <button onclick="pressKey('1')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">1</button>
+                        <button onclick="pressKey('2')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">2</button>
+                        <button onclick="pressKey('3')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">3</button>
+                        <button onclick="pressKey('4')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">4</button>
+                        <button onclick="pressKey('5')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">5</button>
+                        <button onclick="pressKey('6')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">6</button>
+                        <button onclick="pressKey('7')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">7</button>
+                        <button onclick="pressKey('8')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">8</button>
+                        <button onclick="pressKey('9')" class="btn-key h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">9</button>
+                        <div class="col-start-2">
+                            <button onclick="pressKey('0')" class="btn-key w-full h-12 rounded-lg text-xl font-bold text-slate-100 flex items-center justify-center">0</button>
+                        </div>
+                    </div>
+
+                    <!-- Action Keys -->
+                    <div class="grid grid-cols-3 gap-2 pt-2">
+                        <button onclick="pressBranco()" class="btn-key btn-branco h-11 rounded text-xs font-bold uppercase shadow">Branco</button>
+                        <button onclick="pressCorrige()" class="btn-key btn-corrige h-11 rounded text-xs font-bold uppercase shadow">Corrige</button>
+                        <button onclick="pressConfirma()" class="btn-key btn-confirma h-12 rounded text-xs font-extrabold uppercase shadow text-white">Confirma</button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+
+    <!-- HIDDEN ADMIN MODAL -->
+    <div id="adminModal" class="no-print fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-4xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+            
+            <!-- Modal Header -->
+            <div class="px-6 py-4 bg-slate-800 border-b border-slate-700 flex justify-between items-center">
+                <div class="flex items-center gap-3">
+                    <i class="fa-solid fa-sliders text-yellow-400 text-xl"></i>
+                    <h2 class="text-lg font-bold text-slate-100">Painel do Host / Administração</h2>
+                </div>
+                <button onclick="toggleAdminModal()" class="text-slate-400 hover:text-white text-xl">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <!-- Modal Content Tabs -->
+            <div class="flex-1 overflow-y-auto p-6 space-y-8">
+                
+                <!-- General Election Config -->
+                <section class="bg-slate-800/60 p-4 rounded-xl border border-slate-700 space-y-4">
+                    <h3 class="text-sm font-bold text-yellow-400 uppercase tracking-wider">Configurações da Votação</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Título da Eleição</label>
+                            <input type="text" id="inputElectionTitle" value="Eleição Geral de Teste" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-green-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1">Horário Limite para Encerrar (HH:MM)</label>
+                            <input type="time" id="inputEndTime" value="23:59" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-green-500">
+                        </div>
+                    </div>
+                    <button onclick="saveGeneralSettings()" class="bg-green-600 hover:bg-green-500 px-4 py-2 rounded-lg text-sm font-semibold text-white transition">
+                        Salvar Configurações
+                    </button>
+                </section>
+
+                <!-- Candidate Management -->
+                <section class="bg-slate-800/60 p-4 rounded-xl border border-slate-700 space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-sm font-bold text-yellow-400 uppercase tracking-wider">Gerenciar Candidatos</h3>
+                        <span class="text-xs text-slate-400">Adicione ou remova opções de voto</span>
+                    </div>
+
+                    <!-- Add Candidate Form -->
+                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-900 p-3 rounded-lg border border-slate-700">
+                        <div>
+                            <label class="block text-[11px] text-slate-400 mb-1">Número</label>
+                            <input type="number" id="newCandNum" placeholder="Ex: 10" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] text-slate-400 mb-1">Nome</label>
+                            <input type="text" id="newCandName" placeholder="Ex: Maria Silva" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] text-slate-400 mb-1">Partido / Sigla</label>
+                            <input type="text" id="newCandParty" placeholder="Ex: PDEV" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] text-slate-400 mb-1">URL da Foto</label>
+                            <input type="text" id="newCandPhoto" placeholder="https://..." class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                        </div>
+                        <div class="sm:col-span-4 flex justify-end">
+                            <button onclick="addCandidate()" class="bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded text-xs font-semibold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-plus"></i> Adicionar Candidato
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Candidates List Table -->
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs text-slate-300 border-collapse">
+                            <thead>
+                                <tr class="bg-slate-700/50 text-slate-200">
+                                    <th class="p-2">Número</th>
+                                    <th class="p-2">Foto</th>
+                                    <th class="p-2">Nome</th>
+                                    <th class="p-2">Partido</th>
+                                    <th class="p-2 text-right">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody id="candidatesTableBody" class="divide-y divide-slate-700">
+                                <!-- Dynamic rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Live Results & Audit -->
+                <section class="bg-slate-800/60 p-4 rounded-xl border border-slate-700 space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-sm font-bold text-yellow-400 uppercase tracking-wider">Apuração dos Votos em Tempo Real</h3>
+                        <div class="flex gap-2">
+                            <button onclick="printResults()" class="bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded text-xs font-semibold text-white flex items-center gap-1.5">
+                                <i class="fa-solid fa-print"></i> Imprimir Resultado / Ganhador
+                            </button>
+                            <button onclick="resetVotes()" class="bg-red-600/30 hover:bg-red-600 border border-red-500/50 text-red-300 hover:text-white px-3 py-1.5 rounded text-xs font-semibold">
+                                Zerar Urna
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Vote Stats Cards -->
+                    <div class="grid grid-cols-3 gap-3 text-center">
+                        <div class="bg-slate-900 p-3 rounded-lg border border-slate-700">
+                            <span class="block text-xs text-slate-400">Total de Votos</span>
+                            <span id="totalVotesCount" class="text-xl font-bold text-green-400">0</span>
+                        </div>
+                        <div class="bg-slate-900 p-3 rounded-lg border border-slate-700">
+                            <span class="block text-xs text-slate-400">Votos em Branco</span>
+                            <span id="whiteVotesCount" class="text-xl font-bold text-slate-300">0</span>
+                        </div>
+                        <div class="bg-slate-900 p-3 rounded-lg border border-slate-700">
+                            <span class="block text-xs text-slate-400">Votos Nulos</span>
+                            <span id="nullVotesCount" class="text-xl font-bold text-red-400">0</span>
+                        </div>
+                    </div>
+
+                    <!-- Tally Table -->
+                    <div id="resultsTallyList" class="space-y-2">
+                        <!-- Dynamic candidate tally bars -->
+                    </div>
+                </section>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- PRINT ONLY REPORT CONTAINER -->
+    <div class="print-only p-8 text-black bg-white min-h-screen">
+        <div class="text-center border-b-2 border-black pb-4 mb-6">
+            <h1 class="text-2xl font-bold uppercase">Relatório Oficial de Apuração e Resultado</h1>
+            <p id="printTitle" class="text-lg font-semibold mt-1">Eleição Geral</p>
+            <p class="text-sm text-gray-600">Emitido em: <span id="printDate">--</span></p>
+        </div>
+
+        <div class="mb-6 bg-gray-100 p-4 border border-gray-300 rounded">
+            <h2 class="text-lg font-bold mb-2">RESULTADO / GANHADOR:</h2>
+            <div id="printWinnerBox" class="text-xl font-extrabold text-green-700">
+                Apurando...
+            </div>
+        </div>
+
+        <div class="mb-6">
+            <h3 class="text-md font-bold mb-3 uppercase border-b border-gray-400 pb-1">Detalhamento da Votação</h3>
+            <table class="w-full text-left border-collapse border border-gray-300 text-sm">
+                <thead>
+                    <tr class="bg-gray-200">
+                        <th class="border border-gray-300 p-2">Número</th>
+                        <th class="border border-gray-300 p-2">Candidato / Opção</th>
+                        <th class="border border-gray-300 p-2">Partido</th>
+                        <th class="border border-gray-300 p-2 text-right">Total de Votos</th>
+                        <th class="border border-gray-300 p-2 text-right">Percentual</th>
+                    </tr>
+                </thead>
+                <tbody id="printTallyBody">
+                    <!-- Dynamic print rows -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mt-12 flex justify-between text-xs text-gray-500 pt-6 border-t border-gray-300">
+            <div>Chave do Host WebRTC: <span id="printHostPeer">--</span></div>
+            <div>Documento Verificado Eletronicamente</div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Message Box -->
+    <div id="toast" class="no-print fixed bottom-4 right-4 bg-slate-800 border border-slate-700 text-slate-100 px-4 py-3 rounded-lg shadow-xl hidden z-50 flex items-center gap-3">
+        <i id="toastIcon" class="fa-solid fa-circle-info text-blue-400"></i>
+        <span id="toastMsg" class="text-sm font-medium">Notificação</span>
+    </div>
+
+    <script>
+        /* =============================================================
+         * WEB AUDIO API - URNA SOUND EFFECTS
+         * ============================================================= */
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new AudioCtx();
+            }
+        }
+
+        // Standard keypress beep
+        function playKeyBeep() {
+            try {
+                initAudio();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(1200, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.08);
+            } catch(e) {}
+        }
+
+        // Classic Brazilian Urna "Puuuuuip" confirmation sound
+        function playConfirmaSound() {
+            try {
+                initAudio();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                
+                // Frequency sweep from 440Hz to 880Hz
+                osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.6);
+
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.6);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.75);
+
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.75);
+            } catch(e) {}
+        }
+
+        /* =============================================================
+         * ELECTION STATE & CANDIDATE DATA
+         * ============================================================= */
+        let electionState = {
+            title: "Eleição Geral de Teste",
+            endTime: "23:59",
+            candidates: [
+                { number: "10", name: "Ana Santos", party: "PDEV", photo: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80" },
+                { number: "20", name: "Carlos Oliveira", party: "TECH", photo: "https://images.unsplash.com/photo-1560250097-0b93528c311a?w=150&auto=format&fit=crop&q=80" }
+            ],
+            votes: {
+                "10": 0,
+                "20": 0,
+                "BRANCO": 0,
+                "NULO": 0
+            },
+            votedTokens: []
+        };
+
+        // Current voting input state
+        let currentDigits = "";
+        let isWhiteVote = false;
+        let isHost = true;
+        let peer = null;
+        let hostConn = null;
+        let myVoterToken = getOrCreateVoterToken();
+
+        function getOrCreateVoterToken() {
+            let token = localStorage.getItem('urna_voter_token');
+            if (!token) {
+                token = 'VT-' + Math.random().toString(36).substring(2, 10) + '-' + Date.now();
+                localStorage.setItem('urna_voter_token', token);
+            }
+            return token;
+        }
+
+        /* =============================================================
+         * WEBRTC P2P NETWORKING (PEERJS)
+         * ============================================================= */
+        function showLoading(title, subtitle) {
+            const overlay = document.getElementById('loadingOverlay');
+            if (title) document.getElementById('loadingTitle').innerText = title;
+            if (subtitle) document.getElementById('loadingSubtitle').innerText = subtitle;
+            overlay.classList.remove('hidden');
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingOverlay').classList.add('hidden');
+        }
+
+        function initWebRTC() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const targetRoom = urlParams.get('room');
+
+            if (targetRoom) {
+                // Client Remote Voter Mode
+                isHost = false;
+                showLoading("Conectando à Sala...", "Estabelecendo comunicação direta com o computador do Host (" + targetRoom + ")...");
+                connectToHost(targetRoom);
+            } else {
+                // Host Mode
+                isHost = true;
+                showLoading("Iniciando Servidor WebRTC...", "Gerando código da sala P2P para compartilhamento...");
+                setupHostPeer();
+            }
+        }
+
+        function setupHostPeer() {
+            // Generate a readable 5-character room code
+            const roomCode = 'URNA-' + Math.floor(1000 + Math.random() * 9000);
+            peer = new Peer(roomCode);
+
+            peer.on('open', (id) => {
+                hideLoading();
+                document.getElementById('roomCodeDisplay').innerText = id;
+                document.getElementById('connDot').className = "w-2.5 h-2.5 rounded-full bg-green-500";
+                document.getElementById('connText').innerText = "Host Ativo (Servidor)";
+                
+                // Generate QR Code for fast mobile joining
+                const joinUrl = window.location.origin + window.location.pathname + '?room=' + id;
+                document.getElementById('qrcodeSmall').innerHTML = "";
+                new QRCode(document.getElementById('qrcodeSmall'), {
+                    text: joinUrl,
+                    width: 50,
+                    height: 50
+                });
+            });
+
+            peer.on('connection', (conn) => {
+                conn.on('data', (data) => {
+                    handleIncomingMessage(data, conn);
+                });
+            });
+
+            peer.on('error', (err) => {
+                hideLoading();
+                showToast("Erro de Conexão WebRTC: " + err.type, "error");
+            });
+        }
+
+        function connectToHost(hostId) {
+            document.getElementById('roomCodeDisplay').innerText = hostId;
+            document.getElementById('connText').innerText = "Conectando ao Host...";
+            
+            peer = new Peer();
+
+            peer.on('open', () => {
+                hostConn = peer.connect(hostId);
+
+                hostConn.on('open', () => {
+                    hideLoading();
+                    document.getElementById('connDot').className = "w-2.5 h-2.5 rounded-full bg-green-500";
+                    document.getElementById('connText').innerText = "Conectado à Urna Principal";
+                    showToast("Conectado à Urna do Host com sucesso!");
+
+                    // Request initial sync data
+                    hostConn.send({ type: 'REQ_SYNC', token: myVoterToken });
+                });
+
+                hostConn.on('data', (data) => {
+                    handleIncomingMessage(data, hostConn);
+                });
+
+                hostConn.on('close', () => {
+                    document.getElementById('connDot').className = "w-2.5 h-2.5 rounded-full bg-red-500";
+                    document.getElementById('connText').innerText = "Desconectado do Host";
+                });
+            });
+
+            peer.on('error', (err) => {
+                hideLoading();
+                showToast("Não foi possível conectar ao Host: " + err.type, "error");
+            });
+        }
+
+        function connectToHost(hostId) {
+            document.getElementById('roomCodeDisplay').innerText = hostId;
+            document.getElementById('connText').innerText = "Conectando ao Host...";
+            
+            peer = new Peer();
+
+            peer.on('open', () => {
+                hostConn = peer.connect(hostId);
+
+                hostConn.on('open', () => {
+                    document.getElementById('connDot').className = "w-2.5 h-2.5 rounded-full bg-green-500";
+                    document.getElementById('connText').innerText = "Conectado à Urna Principal";
+                    showToast("Conectado à Urna do Host!");
+
+                    // Request initial sync data
+                    hostConn.send({ type: 'REQ_SYNC', token: myVoterToken });
+                });
+
+                hostConn.on('data', (data) => {
+                    handleIncomingMessage(data, hostConn);
+                });
+
+                hostConn.on('close', () => {
+                    document.getElementById('connDot').className = "w-2.5 h-2.5 rounded-full bg-red-500";
+                    document.getElementById('connText').innerText = "Desconectado do Host";
+                });
+            });
+        }
+
+        function handleIncomingMessage(data, conn) {
+            if (data.type === 'REQ_SYNC') {
+                // Host sends current settings & checks if token already voted
+                const alreadyVoted = electionState.votedTokens.includes(data.token);
+                conn.send({
+                    type: 'SYNC_STATE',
+                    state: {
+                        title: electionState.title,
+                        endTime: electionState.endTime,
+                        candidates: electionState.candidates
+                    },
+                    hasVoted: alreadyVoted
+                });
+            } else if (data.type === 'SYNC_STATE') {
+                // Voter receives host configuration
+                electionState.title = data.state.title;
+                electionState.endTime = data.state.endTime;
+                electionState.candidates = data.state.candidates;
+                updateHeaderInfo();
+
+                if (data.hasVoted) {
+                    showAlreadyVotedScreen();
+                }
+            } else if (data.type === 'CAST_VOTE') {
+                // Host receives a vote submission
+                if (!isHost) return;
+
+                if (electionState.votedTokens.includes(data.token)) {
+                    conn.send({ type: 'VOTE_REJECTED', reason: 'ALREADY_VOTED' });
+                    return;
+                }
+
+                if (isTimeExpired()) {
+                    conn.send({ type: 'VOTE_REJECTED', reason: 'TIME_EXPIRED' });
+                    return;
+                }
+
+                // Register vote on host
+                electionState.votes[data.voteChoice] = (electionState.votes[data.voteChoice] || 0) + 1;
+                electionState.votedTokens.push(data.token);
+
+                conn.send({ type: 'VOTE_ACCEPTED' });
+                updateAdminResultsUI();
+                saveStateToLocalStorage();
+                showToast("Novo voto recebido via WebRTC!");
+            } else if (data.type === 'VOTE_ACCEPTED') {
+                // Voter receives confirmation
+                showFimScreen();
+            } else if (data.type === 'VOTE_REJECTED') {
+                if (data.reason === 'ALREADY_VOTED') {
+                    showAlreadyVotedScreen();
+                } else if (data.reason === 'TIME_EXPIRED') {
+                    showExpiredScreen();
+                }
+            }
+        }
+
+        /* =============================================================
+         * KEYBOARD & URNA DISPLAY LOGIC
+         * ============================================================= */
+        function pressKey(num) {
+            if (isTimeExpired()) { showExpiredScreen(); return; }
+            if (hasAlreadyVotedLocally()) { showAlreadyVotedScreen(); return; }
+
+            playKeyBeep();
+            if (isWhiteVote) return; // Ignore numbers if Branco was pressed
+
+            if (currentDigits.length < 2) {
+                currentDigits += num;
+                renderDigits();
+                checkCandidate();
+            }
+        }
+
+        function pressBranco() {
+            if (isTimeExpired() || hasAlreadyVotedLocally()) return;
+            playKeyBeep();
+            currentDigits = "";
+            isWhiteVote = true;
+            renderDigits();
+            document.getElementById('whiteVoteNotice').classList.remove('hidden');
+            document.getElementById('candidateDetails').classList.add('hidden');
+            document.getElementById('nullVoteNotice').classList.add('hidden');
+        }
+
+        function pressCorrige() {
+            if (isTimeExpired() || hasAlreadyVotedLocally()) return;
+            playKeyBeep();
+            resetUrnaInput();
+        }
+
+        function resetUrnaInput() {
+            currentDigits = "";
+            isWhiteVote = false;
+            renderDigits();
+            document.getElementById('whiteVoteNotice').classList.add('hidden');
+            document.getElementById('nullVoteNotice').classList.add('hidden');
+            document.getElementById('candidateDetails').classList.add('hidden');
+        }
+
+        function renderDigits() {
+            const boxes = document.querySelectorAll('.digit-box');
+            boxes[0].innerText = currentDigits[0] || '';
+            boxes[1].innerText = currentDigits[1] || '';
+        }
+
+        function checkCandidate() {
+            const cand = electionState.candidates.find(c => c.number === currentDigits);
+            const candDetails = document.getElementById('candidateDetails');
+            const nullNotice = document.getElementById('nullVoteNotice');
+
+            if (currentDigits.length === 2) {
+                if (cand) {
+                    document.getElementById('candName').innerText = cand.name;
+                    document.getElementById('candParty').innerText = cand.party;
+                    document.getElementById('candPhoto').src = cand.photo || 'https://via.placeholder.com/150';
+                    candDetails.classList.remove('hidden');
+                    nullNotice.classList.add('hidden');
+                } else {
+                    candDetails.classList.add('hidden');
+                    nullNotice.classList.remove('hidden');
+                }
+            } else {
+                candDetails.classList.add('hidden');
+                nullNotice.classList.add('hidden');
+            }
+        }
+
+        function pressConfirma() {
+            if (isTimeExpired()) { showExpiredScreen(); return; }
+            if (hasAlreadyVotedLocally()) { showAlreadyVotedScreen(); return; }
+
+            let voteChoice = null;
+
+            if (isWhiteVote) {
+                voteChoice = "BRANCO";
+            } else if (currentDigits.length === 2) {
+                const cand = electionState.candidates.find(c => c.number === currentDigits);
+                voteChoice = cand ? cand.number : "NULO";
+            } else {
+                // Must enter complete number
+                return;
+            }
+
+            playConfirmaSound();
+
+            if (isHost) {
+                // Direct local host voting
+                electionState.votes[voteChoice] = (electionState.votes[voteChoice] || 0) + 1;
+                electionState.votedTokens.push(myVoterToken);
+                saveStateToLocalStorage();
+                updateAdminResultsUI();
+                showFimScreen();
+            } else if (hostConn && hostConn.open) {
+                // Remote voter sending over WebRTC
+                hostConn.send({
+                    type: 'CAST_VOTE',
+                    voteChoice: voteChoice,
+                    token: myVoterToken
+                });
+            } else {
+                showToast("Erro: Sem conexão com a Urna Principal", "error");
+            }
+        }
+
+        function showFimScreen() {
+            document.getElementById('fimOverlay').classList.remove('hidden');
+            localStorage.setItem('voted_' + electionState.title, 'true');
+            setTimeout(() => {
+                document.getElementById('fimOverlay').classList.add('hidden');
+                showAlreadyVotedScreen();
+            }, 3000);
+        }
+
+        function showAlreadyVotedScreen() {
+            document.getElementById('alreadyVotedOverlay').classList.remove('hidden');
+        }
+
+        function showExpiredScreen() {
+            document.getElementById('expiredOverlay').classList.remove('hidden');
+        }
+
+        function hasAlreadyVotedLocally() {
+            return electionState.votedTokens.includes(myVoterToken) || localStorage.getItem('voted_' + electionState.title) === 'true';
+        }
+
+        function isTimeExpired() {
+            if (!electionState.endTime) return false;
+            const now = new Date();
+            const [hours, minutes] = electionState.endTime.split(':').map(Number);
+            const endTimeDate = new Date();
+            endTimeDate.setHours(hours, minutes, 0, 0);
+            return now > endTimeDate;
+        }
+
+        /* =============================================================
+         * ADMIN PANEL & AUTHENTICATION
+         * ============================================================= */
+        const ADMIN_PASSWORD = "adm1";
+
+        function requestAdminAccess() {
+            document.getElementById('passErrorMsg').classList.add('hidden');
+            document.getElementById('adminPasswordInput').value = "";
+            document.getElementById('adminPassModal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('adminPasswordInput').focus(), 100);
+        }
+
+        function closeAdminPassModal() {
+            document.getElementById('adminPassModal').classList.add('hidden');
+        }
+
+        function handleAdminLogin(event) {
+            event.preventDefault();
+            const inputPass = document.getElementById('adminPasswordInput').value;
+            if (inputPass === ADMIN_PASSWORD) {
+                closeAdminPassModal();
+                toggleAdminModal();
+            } else {
+                document.getElementById('passErrorMsg').classList.remove('hidden');
+                document.getElementById('adminPasswordInput').value = "";
+                document.getElementById('adminPasswordInput').focus();
+            }
+        }
+
+        function toggleAdminModal() {
+            const modal = document.getElementById('adminModal');
+            modal.classList.toggle('hidden');
+            if (!modal.classList.contains('hidden')) {
+                renderCandidatesTable();
+                updateAdminResultsUI();
+            }
+        }
+
+        function saveGeneralSettings() {
+            electionState.title = document.getElementById('inputElectionTitle').value;
+            electionState.endTime = document.getElementById('inputEndTime').value;
+            updateHeaderInfo();
+            saveStateToLocalStorage();
+            showToast("Configurações salvas com sucesso!");
+            
+            // Broadcast new config if host
+            if (isHost && peer) {
+                // Updates will be requested by peers on connection
+            }
+        }
+
+        function updateHeaderInfo() {
+            document.getElementById('electionTitleHeader').innerText = electionState.title;
+            document.getElementById('endTimeDisplay').innerText = electionState.endTime;
+            document.getElementById('inputElectionTitle').value = electionState.title;
+            document.getElementById('inputEndTime').value = electionState.endTime;
+        }
+
+        function addCandidate() {
+            const num = document.getElementById('newCandNum').value.trim();
+            const name = document.getElementById('newCandName').value.trim();
+            const party = document.getElementById('newCandParty').value.trim();
+            let photo = document.getElementById('newCandPhoto').value.trim();
+
+            if (!num || !name || !party) {
+                showToast("Preencha todos os campos do candidato!", "error");
+                return;
+            }
+
+            if (!photo) {
+                photo = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`;
+            }
+
+            if (electionState.candidates.some(c => c.number === num)) {
+                showToast("Já existe um candidato com este número!", "error");
+                return;
+            }
+
+            electionState.candidates.push({ number: num, name: name, party: party, photo: photo });
+            if (!(num in electionState.votes)) electionState.votes[num] = 0;
+
+            document.getElementById('newCandNum').value = "";
+            document.getElementById('newCandName').value = "";
+            document.getElementById('newCandParty').value = "";
+            document.getElementById('newCandPhoto').value = "";
+
+            renderCandidatesTable();
+            updateAdminResultsUI();
+            saveStateToLocalStorage();
+            showToast("Candidato adicionado!");
+        }
+
+        function removeCandidate(num) {
+            electionState.candidates = electionState.candidates.filter(c => c.number !== num);
+            delete electionState.votes[num];
+            renderCandidatesTable();
+            updateAdminResultsUI();
+            saveStateToLocalStorage();
+            showToast("Candidato removido!");
+        }
+
+        function renderCandidatesTable() {
+            const tbody = document.getElementById('candidatesTableBody');
+            tbody.innerHTML = "";
+
+            electionState.candidates.forEach(c => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-slate-800/40";
+                tr.innerHTML = `
+                    <td class="p-2 font-mono font-bold text-yellow-400">${c.number}</td>
+                    <td class="p-2"><img src="${c.photo}" class="w-8 h-8 rounded-full object-cover border border-slate-600"></td>
+                    <td class="p-2 font-semibold">${c.name}</td>
+                    <td class="p-2 text-slate-400">${c.party}</td>
+                    <td class="p-2 text-right">
+                        <button onclick="removeCandidate('${c.number}')" class="text-red-400 hover:text-red-300">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateAdminResultsUI() {
+            let total = 0;
+            Object.values(electionState.votes).forEach(v => total += v);
+
+            document.getElementById('totalVotesCount').innerText = total;
+            document.getElementById('whiteVotesCount').innerText = electionState.votes["BRANCO"] || 0;
+            document.getElementById('nullVotesCount').innerText = electionState.votes["NULO"] || 0;
+
+            const list = document.getElementById('resultsTallyList');
+            list.innerHTML = "";
+
+            // Sort candidates by vote count
+            const sorted = [...electionState.candidates].sort((a,b) => (electionState.votes[b.number]||0) - (electionState.votes[a.number]||0));
+
+            sorted.forEach(c => {
+                const count = electionState.votes[c.number] || 0;
+                const percent = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+
+                const div = document.createElement('div');
+                div.className = "bg-slate-900 p-3 rounded-lg border border-slate-700 flex flex-col gap-1.5";
+                div.innerHTML = `
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="font-bold text-slate-200">#${c.number} ${c.name} (${c.party})</span>
+                        <span class="font-mono text-green-400 font-bold">${count} votos (${percent}%)</span>
+                    </div>
+                    <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                        <div class="bg-green-500 h-full transition-all duration-500" style="width: ${percent}%"></div>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function resetVotes() {
+            electionState.votes = { "BRANCO": 0, "NULO": 0 };
+            electionState.candidates.forEach(c => electionState.votes[c.number] = 0);
+            electionState.votedTokens = [];
+            saveStateToLocalStorage();
+            updateAdminResultsUI();
+            showToast("Urna zerada com sucesso!");
+        }
+
+        function printResults() {
+            // Prepare print view template
+            document.getElementById('printTitle').innerText = electionState.title;
+            document.getElementById('printDate').innerText = new Date().toLocaleString('pt-BR');
+            document.getElementById('printHostPeer').innerText = peer ? peer.id : 'LocalHost';
+
+            let total = 0;
+            Object.values(electionState.votes).forEach(v => total += v);
+
+            const tbody = document.getElementById('printTallyBody');
+            tbody.innerHTML = "";
+
+            const sorted = [...electionState.candidates].sort((a,b) => (electionState.votes[b.number]||0) - (electionState.votes[a.number]||0));
+
+            sorted.forEach(c => {
+                const count = electionState.votes[c.number] || 0;
+                const percent = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="border border-gray-300 p-2 font-bold">${c.number}</td>
+                    <td class="border border-gray-300 p-2">${c.name}</td>
+                    <td class="border border-gray-300 p-2">${c.party}</td>
+                    <td class="border border-gray-300 p-2 text-right font-bold">${count}</td>
+                    <td class="border border-gray-300 p-2 text-right">${percent}%</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // White & Null
+            const whiteCount = electionState.votes["BRANCO"] || 0;
+            const nullCount = electionState.votes["NULO"] || 0;
+
+            tbody.innerHTML += `
+                <tr>
+                    <td class="border border-gray-300 p-2 font-bold">--</td>
+                    <td class="border border-gray-300 p-2">Votos em Branco</td>
+                    <td class="border border-gray-300 p-2">--</td>
+                    <td class="border border-gray-300 p-2 text-right font-bold">${whiteCount}</td>
+                    <td class="border border-gray-300 p-2 text-right">${total > 0 ? ((whiteCount/total)*100).toFixed(1) : 0}%</td>
+                </tr>
+                <tr>
+                    <td class="border border-gray-300 p-2 font-bold">--</td>
+                    <td class="border border-gray-300 p-2">Votos Nulos</td>
+                    <td class="border border-gray-300 p-2">--</td>
+                    <td class="border border-gray-300 p-2 text-right font-bold">${nullCount}</td>
+                    <td class="border border-gray-300 p-2 text-right">${total > 0 ? ((nullCount/total)*100).toFixed(1) : 0}%</td>
+                </tr>
+            `;
+
+            // Winner declaration
+            const winnerBox = document.getElementById('printWinnerBox');
+            if (sorted.length > 0 && total > 0 && (electionState.votes[sorted[0].number] > 0)) {
+                winnerBox.innerText = `🏆 ${sorted[0].name} (${sorted[0].party}) - ${electionState.votes[sorted[0].number]} votos (${((electionState.votes[sorted[0].number]/total)*100).toFixed(1)}%)`;
+            } else {
+                winnerBox.innerText = "Nenhum vencedor definido (Sem votos válidos).";
+            }
+
+            window.print();
+        }
+
+        function copyRoomLink() {
+            const roomCode = document.getElementById('roomCodeDisplay').innerText;
+            if (roomCode === '---') return;
+            const url = window.location.origin + window.location.pathname + '?room=' + roomCode;
+            navigator.clipboard.writeText(url).then(() => {
+                showToast("Link copiado para a área de transferência!");
+            });
+        }
+
+        function showToast(msg, type="info") {
+            const toast = document.getElementById('toast');
+            const toastMsg = document.getElementById('toastMsg');
+            const toastIcon = document.getElementById('toastIcon');
+
+            toastMsg.innerText = msg;
+            toastIcon.className = type === "error" ? "fa-solid fa-circle-xmark text-red-400" : "fa-solid fa-circle-info text-blue-400";
+            
+            toast.classList.remove('hidden');
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        }
+
+        function saveStateToLocalStorage() {
+            localStorage.setItem('urna_election_state', JSON.stringify(electionState));
+        }
+
+        function loadStateFromLocalStorage() {
+            const saved = localStorage.getItem('urna_election_state');
+            if (saved) {
+                try {
+                    electionState = JSON.parse(saved);
+                } catch(e) {}
+            }
+        }
+
+        /* =============================================================
+         * INITIALIZATION ON PAGE LOAD
+         * ============================================================= */
+        window.onload = function() {
+            loadStateFromLocalStorage();
+            updateHeaderInfo();
+            initWebRTC();
+
+            if (hasAlreadyVotedLocally()) {
+                showAlreadyVotedScreen();
+            } else if (isTimeExpired()) {
+                showExpiredScreen();
+            }
+        };
+    </script>
+</body>
+</html>
